@@ -1,4 +1,3 @@
-# ui.py - Modified with Face Recognition for Password Recovery
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QIcon
@@ -9,6 +8,36 @@ from face_auth import (
     has_face_recognition,
     verify_face_for_user
 )
+import re
+
+def is_valid_username(username: str) -> tuple[bool, str]:
+    """Validate username and return (is_valid, error_message)"""
+    username = username.strip()
+    if not username:
+        return False, "Username is required"
+    if len(username) < 3:
+        return False, "Username must be at least 3 characters long"
+    if len(username) > 20:
+        return False, "Username cannot exceed 20 characters"
+    if not re.match(r'^[a-zA-Z0-9_.-]+$', username):
+        return False, "Username can only contain letters, numbers, dots, hyphens, and underscores"
+    if username[0] in '.-_':
+        return False, "Username cannot start with a dot, hyphen, or underscore"
+    return True, ""
+
+def is_valid_password(password: str) -> tuple[bool, str]:
+    """Validate password and return (is_valid, error_message)"""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    if not any(c.isupper() for c in password):
+        return False, "Password must contain at least one uppercase letter"
+    if not any(c.islower() for c in password):
+        return False, "Password must contain at least one lowercase letter"
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one digit"
+    if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
+        return False, "Password must contain at least one special character (!@#$%^&* etc.)"
+    return True, ""
 
 class AuthDialog(QDialog):
     def __init__(self):
@@ -158,15 +187,23 @@ class AuthDialog(QDialog):
         form.addRow(pass_label, self.pass_input)
         layout.addLayout(form)
 
-        # Face recognition checkbox (only for registration)
+        # Face recognition info (mandatory for registration)
         self.face_recognition_group = QGroupBox()
         face_layout = QVBoxLayout()
-        self.enable_face_cb = QCheckBox("Enable Face Recognition for Password Recovery")
-        self.enable_face_cb.setStyleSheet("font-weight: 600; color: #28a745;")
-        face_info = QLabel("📸 Capture your face to recover your password if you forget it")
-        face_info.setStyleSheet("font-size: 12px; color: #666; margin-left: 25px;")
+        
+        face_title = QLabel("🔒 Face Recognition Required")
+        face_title.setStyleSheet("font-weight: 700; color: #0066cc; font-size: 15px;")
+        
+        face_info = QLabel(
+            "📸 Face recognition is <b>mandatory</b> for account security and password recovery.\n\n"
+            "Your face will be captured during registration to enable:\n"
+            "• Secure password recovery\n"
+            "• Enhanced account security"
+        )
+        face_info.setStyleSheet("font-size: 13px; color: #333; margin-left: 10px;")
         face_info.setWordWrap(True)
-        face_layout.addWidget(self.enable_face_cb)
+        
+        face_layout.addWidget(face_title)
         face_layout.addWidget(face_info)
         self.face_recognition_group.setLayout(face_layout)
         self.face_recognition_group.hide()
@@ -318,79 +355,121 @@ class AuthDialog(QDialog):
         dialog.exec_()
 
     def validate(self):
-        u, p = self.user_input.text().strip(), self.pass_input.text()
-        if not u or not p:
-            self.status.setText("⚠️ All fields are required")
-            self.status.show()
+        username = self.user_input.text().strip()
+        password = self.pass_input.text()
+
+        # Basic required fields
+        if not username or not password:
+            self.show_error("⚠️ Username and password are required")
             return
-        
+
         if self.mode_register.isChecked():
-            ok, msg = register_user(u, p)
-            if ok:
-                # Check if face recognition should be enabled
-                if self.enable_face_cb.isChecked():
-                    self.setup_face_recognition(u)
-                else:
-                    self.show_success_and_switch_to_login(msg)
-            else:
-                self.status.setStyleSheet("color: #dc3545; font-weight: 600; background-color: #f8d7da; "
-                                         "padding: 10px; border-radius: 6px; border: 1px solid #f5c6cb;")
-                self.status.setText(f"✗ {msg}")
-                self.status.show()
+            # Username validation
+            valid, msg = is_valid_username(username)
+            if not valid:
+                self.show_error(f"✗ Invalid username: {msg}")
+                return
+
+            # Password validation
+            valid, msg = is_valid_password(password)
+            if not valid:
+                self.show_error(f"✗ Invalid password: {msg}")
+                return
+
+            # Check if username already exists
+            if user_exists(username):
+                self.show_error("✗ Username already exists")
+                return
+
+            # Proceed to mandatory face recognition
+            self.setup_face_recognition_mandatory(username, password)
+
         else:
-            if verify_user(u, p):
-                self.username = u
+            # Login mode - just verify credentials
+            if verify_user(username, password):
+                self.username = username
                 self.accept()
             else:
-                self.status.setText("✗ Incorrect credentials")
-                self.status.setStyleSheet("color: #dc3545; font-weight: 600; background-color: #f8d7da; "
-                                         "padding: 10px; border-radius: 6px; border: 1px solid #f5c6cb;")
-                self.status.show()
+                self.show_error("✗ Incorrect username or password")
 
-    def setup_face_recognition(self, username):
-        """Setup face recognition for new user"""
-        reply = QMessageBox.information(self, "Face Recognition Setup",
-            "The camera will open to capture your face for password recovery.\n\n"
-            "Instructions:\n"
+    def show_error(self, message: str):
+        """Helper to show error messages consistently"""
+        self.status.setStyleSheet(
+            "color: #dc3545; font-weight: 600; background-color: #f8d7da; "
+            "padding: 10px; border-radius: 6px; border: 1px solid #f5c6cb;"
+        )
+        self.status.setText(message)
+        self.status.show()
+
+    def setup_face_recognition_mandatory(self, username, password):
+        """Setup face recognition (MANDATORY) for new user"""
+        reply = QMessageBox.information(self, "Face Recognition Required",
+            "Face recognition is <b>required</b> to create an account.\n\n"
+            "The camera will now open to capture your face.\n\n"
+            "<b>Instructions:</b>\n"
             "• Position your face in the frame\n"
             "• Ensure good lighting\n"
             "• Press SPACE to capture\n"
-            "• Press ESC to skip\n\n"
+            "• Press ESC to cancel registration\n\n"
             "Press OK to continue.",
             QMessageBox.Ok | QMessageBox.Cancel)
         
         if reply != QMessageBox.Ok:
-            self.show_success_and_switch_to_login("Account created (without face recognition)")
+            self.status.setStyleSheet("color: #dc3545; font-weight: 600; background-color: #f8d7da; "
+                                     "padding: 10px; border-radius: 6px; border: 1px solid #f5c6cb;")
+            self.status.setText("✗ Registration cancelled - Face recognition is required")
+            self.status.show()
             return
         
+        # Capture face
         success, message, encoding = capture_face_for_registration(username)
         
-        if success and encoding is not None:
-            save_success, save_msg = save_face_encoding(username, encoding)
-            if save_success:
-                QMessageBox.information(self, "Success",
-                    "Account created successfully!\n\n"
-                    "✅ Face recognition has been enabled for password recovery.\n"
-                    "You can now recover your password using your face if you forget it.")
-            else:
-                QMessageBox.warning(self, "Warning",
-                    f"Account created but face recognition setup failed:\n{save_msg}\n\n"
-                    "Password recovery will not be available.")
-        else:
-            QMessageBox.warning(self, "Warning",
-                f"Account created but face recognition setup failed:\n{message}\n\n"
-                "Password recovery will not be available.")
+        if not success or encoding is None:
+            QMessageBox.critical(self, "Registration Failed",
+                f"Face capture failed: {message}\n\n"
+                "Face recognition is <b>mandatory</b> for account creation.\n"
+                "Please try again.")
+            self.status.setStyleSheet("color: #dc3545; font-weight: 600; background-color: #f8d7da; "
+                                     "padding: 10px; border-radius: 6px; border: 1px solid #f5c6cb;")
+            self.status.setText(f"✗ Registration failed: {message}")
+            self.status.show()
+            return
         
-        self.show_success_and_switch_to_login("Account created successfully")
-
-    def show_success_and_switch_to_login(self, message):
-        """Show success message and switch to login mode"""
+        # Face captured successfully, now create the account
+        ok, msg = register_user(username, password)
+        
+        if not ok:
+            QMessageBox.critical(self, "Registration Failed",
+                f"Account creation failed: {msg}")
+            self.status.setStyleSheet("color: #dc3545; font-weight: 600; background-color: #f8d7da; "
+                                     "padding: 10px; border-radius: 6px; border: 1px solid #f5c6cb;")
+            self.status.setText(f"✗ {msg}")
+            self.status.show()
+            return
+        
+        # Save face encoding
+        save_success, save_msg = save_face_encoding(username, encoding)
+        
+        if not save_success:
+            QMessageBox.warning(self, "Warning",
+                f"Account created but face recognition setup failed:\n{save_msg}\n\n"
+                "Please contact support.")
+        else:
+            QMessageBox.information(self, "Success",
+                "🎉 Account created successfully!\n\n"
+                "✅ Face recognition has been enabled.\n"
+                "You can now sign in and recover your password using your face if needed.")
+        
+        # Switch to login mode
         self.status.setStyleSheet("color: #28a745; font-weight: 600; background-color: #d4edda; "
                                  "padding: 10px; border-radius: 6px; border: 1px solid #c3e6cb;")
-        self.status.setText(f"✓ {message}")
+        self.status.setText("✓ Account created successfully! Please sign in.")
         self.status.show()
         self.mode_login.setChecked(True)
         self.update_ui_for_mode()
+        self.user_input.setText(username)
+        self.pass_input.clear()
+        self.pass_input.setFocus()
 
 
 class SubstitutionDialog(QDialog):

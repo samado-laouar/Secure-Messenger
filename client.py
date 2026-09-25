@@ -1,4 +1,3 @@
-# client.py - Polished Simple Light UI
 import sys
 import socket
 import threading
@@ -11,13 +10,9 @@ from ui import AuthDialog, SubstitutionDialog
 from crypto import *
 from rsa_crypto import generate_keypair, rsa_decrypt, rsa_encrypt, key_to_string, string_to_key
 
-# In cipher_changed, send_key_request, handle_key_request, etc.:
-# No changes needed — just make sure you're using the new functions!
-# In cipher_changed, send_key_request, handle_key_request, etc.:
-# No changes needed — just make sure you're using the new functions!
 class Signals(QObject):
     key_request = pyqtSignal(str, dict)
-    key_response = pyqtSignal(str, bool)
+    key_response = pyqtSignal(str, dict)
     message_received = pyqtSignal(str, str)
 
 class Client(QWidget):
@@ -28,8 +23,7 @@ class Client(QWidget):
         self.shared_keys = {}
         self.cipher = "Caesar"
         self.key = 3
-        # IMPROVEMENT: Initialize to identity map, not Caesar 3 (Change 3)
-        self.sub_map = {chr(65+i): chr(65 + i) for i in range(26)}
+        self.sub_map = {chr(65+i): chr(65 + (i+3)%26) for i in range(26)}
         self.current_step = 0
         self.selected_dest = None
         self.pending_key_request = False
@@ -443,22 +437,13 @@ class Client(QWidget):
 
     def send_key_request(self):
         config = {"cipher": self.cipher}
-        
         if self.cipher == "RSA":
-            # ### CORRECTED: Ensure keys are generated before sending
             if self.rsa_public_key is None:
-                print("[RSA DEBUG] Generating RSA key pair for myself...")
-                self.rsa_public_key, self.rsa_private_key = generate_keypair()  # ou 1024            
-                print(f"[RSA DEBUG] Generating RSA key pair for myself done E : {self.rsa_public_key}\n D:{self.rsa_private_key}")
-            # Send our public key
+                self.rsa_public_key, self.rsa_private_key = generate_keypair()
             config["public_key"] = key_to_string(self.rsa_public_key)
-            print(f"[RSA DEBUG] Config {config}")
-        
         elif self.cipher == "Substitution":
             config["key"] = self.sub_map
-        
         elif self.cipher == "Caesar without Key":
-                # Ask user to select their own encryption key
                 key_dialog = QInputDialog()
                 key_value, ok = key_dialog.getInt(
                     self, 
@@ -492,22 +477,9 @@ class Client(QWidget):
                 else:
                     config["language"] = "english"
                     self.selected_language = "english"
-        
         else:
             try:
-                if self.cipher == "Caesar":
-                    config["key"] = int(self.key_in.text())
-                elif self.cipher in ["Vigenère", "Transposition"]:
-                    # IMPROVEMENT: Sanitize key input (Change 1)
-                    key_text = self.key_in.text().upper().strip()
-                    sanitized_key = "".join(c for c in key_text if c.isalpha())
-                    if not sanitized_key:
-                        QMessageBox.warning(self, "Invalid Key", "The keyword cannot be empty or contain only non-alphabetic characters.")
-                        return
-                    config["key"] = sanitized_key
-                else:
-                    config["key"] = self.key_in.text().upper()
-
+                config["key"] = int(self.key_in.text()) if self.cipher == "Caesar" else self.key_in.text().upper()
             except ValueError:
                 QMessageBox.warning(self, "Invalid Key", "Please enter a valid key.")
                 return
@@ -523,11 +495,8 @@ class Client(QWidget):
         self.waiting_label.setText(f"Waiting for response from {self.selected_dest}...")
         if self.cipher == "Caesar without Key":
             key_text = f"Auto-detect ({config.get('language', 'english').capitalize()})"
-        elif self.cipher == "RSA":
-            key_text = "Public Key Exchange (RSA)"
         else:
             key_text = self.key_in.text() if self.cipher != "Substitution" else "Custom Table"
-            
         self.key_details.setText(f"<b>Method:</b> {self.cipher}<br><b>Key:</b> {key_text}")
         self.key_status.setText("⏳ Request sent, please wait...")
         self.next_btn.setVisible(False)
@@ -565,13 +534,7 @@ class Client(QWidget):
         self.go_back()
 
     def update_config_label(self):
-        if self.cipher == "Caesar without Key":
-             key_text = f"Encrypt shift: {self.shared_keys[self.selected_dest][1]['encrypt_key']}"
-        elif self.cipher == "RSA":
-            key_text = "Public Key Exchange"
-        else:
-            key_text = self.key_in.text() if self.cipher != "Substitution" else "Custom Table"
-            
+        key_text = self.key_in.text() if self.cipher != "Substitution" else "Custom Table"
         self.config_label.setText(f"Recipient: {self.selected_dest}  •  Method: {self.cipher}  •  Key: {key_text}")
 
     def log(self, html):
@@ -581,7 +544,6 @@ class Client(QWidget):
         self.cipher = name
         self.edit_sub.setEnabled(name == "Substitution")
         
-        # Update key input based on cipher type
         if name == "Substitution":
             self.key_in.setEnabled(False)
         elif name == "Caesar without Key":
@@ -628,7 +590,6 @@ class Client(QWidget):
             try:
                 # Increased buffer for RSA encrypted messages
                 data = self.sock.recv(65536).decode()
-                print(f"data recived {data}")
                 if not data: break
                 buf += data
                 while "\n" in buf:
@@ -658,7 +619,7 @@ class Client(QWidget):
         elif t == "key_request":
             self.signals.key_request.emit(pkt["from"], pkt["config"])
         elif t == "key_response":
-            self.signals.key_response.emit(pkt["from"], pkt["accept"])
+            self.signals.key_response.emit(pkt["from"], pkt)
 
     def display_encrypted_message(self, sender, encrypted_text):
         msg_id = self.message_counter
@@ -668,26 +629,18 @@ class Client(QWidget):
         self.log("<div style='background-color: #fff3cd; padding: 16px; margin: 10px 0; "
                 "border-radius: 6px; border-left: 3px solid #ffc107;'>")
         self.log(f"<div style='margin-bottom: 8px;'><b style='font-size: 14px; color: #856404;'>🔒 Encrypted from {sender}</b> "
-                f"<span style='background-color: #ffc107; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;'>ID: {msg_id}</span></div>")
+                f"<span style='background-color: #ffc107; color: white; padding: 3px 8px; border-radius: 4px; ")
         self.log(f"<code style='background-color: white; padding: 10px; display: block; border-radius: 4px; "
-                f"color: #d63384; font-weight: 600; border: 1px solid #e0e0e0;'>{encrypted_text}</code></div>")
+                f"color: #d63384; font-weight: 600; border: 1px solid #e0e0e0;'>{encrypted_text}</code>")
 
     def decrypt_selected_message(self):
         sel = self.chat.textCursor().selectedText()
         msg_id = None
-        
-        # Try to extract the ID from the selection if a user selected the ID span
-        match = re.search(r'ID:\s*(\d+)', sel)
-        if match: 
-            msg_id = int(match.group(1))
-        
-        # Fallback: Find the ID of the last message logged in HTML
-        if msg_id is None:
-            html = self.chat.toHtml()
-            # Find all IDs and take the largest one
-            all_ids = re.findall(r'ID:\s*(\d+)', html)
-            if all_ids:
-                msg_id = int(max(all_ids, key=int))
+        if sel:
+            match = re.search(r'ID:\s*(\d+)', sel)
+            if match: msg_id = int(match.group(1))
+        if msg_id is None and self.encrypted_messages:
+            msg_id = max(self.encrypted_messages.keys())
         
         if msg_id is None or msg_id not in self.encrypted_messages:
             QMessageBox.warning(self, "No Message", "No encrypted message found.")
@@ -707,65 +660,69 @@ class Client(QWidget):
             plain = self.decrypt(msg_data['encrypted'], ciph, key)
             msg_data['decrypted'] = plain
             
-            # The decrypt function logs its own detection/shift message if Caesar without Key is used
-            
             self.log("<div style='background-color: #d1ecf1; padding: 16px; margin: 10px 0; "
                     "border-radius: 6px; border-left: 3px solid #17a2b8;'>")
-            self.log(f"<div style='margin-bottom: 8px;'><b style='font-size: 14px; color: #0c5460;'>🔓 Decrypted from {msg_data['sender']}</b> "
-                    f"<span style='background-color: #17a2b8; color: white; padding: 3px 8px; border-radius: 4px; "
-                    f"font-size: 11px; font-weight: 600;'>ID: {msg_id}</span></div>")
+            self.log(f"<div style='margin-bottom: 8px;'><b style='font-size: 14px; color: #0c5460;'>🔓 Decrypted from {msg_data['sender']}</b> ")
             self.log(f"<div style='background-color: white; padding: 12px; border-radius: 4px; color: #155724; "
                     f"font-weight: 600; font-size: 13px; border: 1px solid #e0e0e0;'>{plain}</div></div>")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Cannot decrypt:\n{e}")
 
-    def handle_key_response(self, sender, accept_bool):
-        # FIXED: accept_bool is now the boolean directly (from pkt["accept"])
-        print(f"[RSA DEBUG] Received key_response from {sender}: accept={accept_bool}")
+    def handle_key_response(self, sender, response_data):
+        accept_bool = response_data.get("accept", False)
         if sender == self.selected_dest and self.pending_key_request:
             self.pending_key_request = False
             
             if accept_bool:
-                # Success — store shared configuration
                 if self.cipher == "RSA":
-                    self.shared_keys[sender] = ("RSA", sender)  # key = username → lookup in peer_rsa_public_keys
-                    print(f"RSA key exchange completed with {sender}")
-                    print(f"[RSA DEBUG] RSA key exchange SUCCESS with {sender}")
-                    print(f"     Do I have their public key? {sender in self.peer_rsa_public_keys}{self.peer_rsa_public_keys}")
-
+                    recipient_pub_str = response_data.get("public_key")
+                    if recipient_pub_str:
+                        self.peer_rsa_public_keys[sender] = string_to_key(recipient_pub_str)
+                        self.shared_keys[sender] = ("RSA", sender) # key = username → lookup in peer_rsa_public_keys
+                    else:
+                        accept_bool = False 
+                        
                 elif self.cipher == "Caesar without Key":
-                    # IMPROVEMENT: Store OUR chosen encryption key for sending to them, and the language they will use to crack (Change 2)
+                    sender_key = self.selected_sender_key  # Our encryption key
+                    receiver_key = response_data.get("receiver_key", 5)  # Their encryption key
+                    language = self.selected_language
+                    
                     self.shared_keys[sender] = ("Caesar without Key", {
-                        "encrypt_key": self.selected_sender_key,
-                        "language": self.selected_language
+                        "encrypt_key": sender_key,      # Key we use to encrypt
+                        "decrypt_key": receiver_key,    # Key they use to encrypt (we decrypt with -receiver_key)
+                        "language": language
                     })
-
                 else:
-                    # Standard ciphers: store key as proposed
                     try:
                         if self.cipher == "Caesar":
                             key_val = int(self.key_in.text())
                         elif self.cipher == "Substitution":
-                            # Use the local map that was sent in the request (Change 4)
-                            key_val = self.sub_map 
-                        else: # Vigenère, Transposition
-                            # Ensure key is stored clean (consistent with send_key_request)
-                            key_text = self.key_in.text().upper().strip()
-                            key_val = "".join(c for c in key_text if c.isalpha())
-                            if not key_val:
-                                raise ValueError("Empty key after sanitization")
-
+                            key_val = self.sub_map
+                        else:
+                            key_val = self.key_in.text().upper()
                         self.shared_keys[sender] = (self.cipher, key_val)
-                    except ValueError as e:
-                        QMessageBox.warning(self, "Error", f"Invalid key format: {e}")
+                    except ValueError:
+                        QMessageBox.warning(self, "Error", "Invalid key format.")
                         return
 
-                self.key_status.setText(
-                    f"<b style='color:green; font-size: 16px;'>✓ Key accepted by {sender}!</b>"
-                )
-                self.waiting_label.setText("Secure communication established.")
+                if accept_bool: # Check again in case RSA key was missing
+                    self.key_status.setText(
+                        f"<b style='color:green; font-size: 16px;'>✓ Key accepted by {sender}!</b>"
+                    )
+                    self.waiting_label.setText("Secure communication established.")
+    
+                    QTimer.singleShot(1500, self.go_to_messaging)
+                else:
+                     self.key_status.setText(
+                        f"<b style='color:red; font-size: 16px;'>✗ {sender} rejected the configuration (or missing RSA key)</b>"
+                    )
+                     self.waiting_label.setText("You can modify and try again.")
+                     self.back_btn.setVisible(True)
+                     self.back_btn.setText("← Modify Configuration")
+                     QMessageBox.warning(self, "Rejected",
+                        f"{sender} did not accept your encryption configuration.\n"
+                        "Try changing the method or key.")
 
-                QTimer.singleShot(1500, self.go_to_messaging)
 
             else:
                 self.key_status.setText(
@@ -783,19 +740,13 @@ class Client(QWidget):
         ciph = config["cipher"]
         
         try:
-            receiver_pub_key = None
-            
             if ciph == "RSA":
-                # Generate our keys if not present
                 if self.rsa_public_key is None:
-                    print("[RSA DEBUG] Generating my own RSA key pair (first time responding)")
                     self.rsa_public_key, self.rsa_private_key = generate_keypair()
-                
-                # Store sender's public key from request
+
                 sender_pub_str = config.get("public_key")
                 if sender_pub_str:
                     self.peer_rsa_public_keys[sender] = string_to_key(sender_pub_str)
-                    print(f"[RSA DEBUG] Stored public key from {sender}")
                 else:
                     raise ValueError("No public key provided in RSA request")
                 
@@ -806,12 +757,11 @@ class Client(QWidget):
             elif ciph == "Caesar without Key":
                 language = config.get("language", "english").capitalize()
                 sender_key = config.get("sender_key", 5)
-                key_preview = f"Auto-detect ({language}), Sender uses shift {sender_key}"
+                key_preview = f"Auto-detect ({language})"
             else:
                 key = config.get("key")
                 key_preview = str(key)
 
-            # Show dialog
             reply = QMessageBox.question(self, "Key Request",
                 f"<b>{sender}</b> wants to communicate securely.<br><br>"
                 f"<b>Method:</b> {ciph}<br>"
@@ -839,23 +789,20 @@ class Client(QWidget):
             # Include our public key if RSA and accepted
             if accept and ciph == "RSA":
                 response["public_key"] = key_to_string(self.rsa_public_key)
-                print(f"[RSA DEBUG] Accepting RSA request - sending my public key back to {sender}")
 
             # Include our encryption key if Caesar without Key
             if accept and ciph == "Caesar without Key":
                 response["receiver_key"] = receiver_key
 
             self.sock.send((json.dumps(response) + "\n").encode())
-            print(f"[RSA DEBUG] Sent key_response to {sender}: accept={accept}")
 
             if accept:
                 # Store shared config locally
                 if ciph == "RSA":
                     self.shared_keys[sender] = ("RSA", sender)
-                    print(f"[RSA DEBUG] RSA secure channel established with {sender}")
                 elif ciph == "Caesar without Key":
-                    # IMPROVEMENT: Store only OUR encrypt key and the language (Change 2)
                     self.shared_keys[sender] = ("Caesar without Key", {
+                        "decrypt_key": None,
                         "encrypt_key": receiver_key or 5,
                         "language": config.get("language", "english")
                     })
@@ -873,7 +820,7 @@ class Client(QWidget):
                     self.sub_map = config.get("key", self.sub_map)
                     self.key_in.setEnabled(False)
                 elif ciph == "Caesar without Key":
-                    self.key_in.setText(f"Encrypt shift: {receiver_key or 5}")
+                    self.key_in.setText(f"Auto-detect")
                 elif ciph == "RSA":
                     self.key_in.setText("RSA Key Exchange")
                 else:
@@ -899,7 +846,6 @@ class Client(QWidget):
         self.back_btn.setText("← Retour à la configuration")
         self.log(f"<b style='color:green'>✓ Communication sécurisée établie avec {self.selected_dest}</b>")
 
-
     def send(self):
         dest = self.selected_dest
         if not dest:
@@ -909,11 +855,6 @@ class Client(QWidget):
         text = self.input.text()
         if not text: 
             return
-
-        # Debug: Print current shared keys
-        print(f"DEBUG - Attempting to send to: {dest}")
-        print(f"DEBUG - Shared keys: {self.shared_keys.keys()}")
-        print(f"DEBUG - Selected dest: {self.selected_dest}")
         
         if dest not in self.shared_keys:
             QMessageBox.warning(self, "Erreur",
@@ -927,12 +868,9 @@ class Client(QWidget):
         ciph, key = self.shared_keys[dest]
         
         
-        print(f"DEBUG - Using cipher: {ciph}, key type: {type(key)}, shared keys {key}")
         
         try:
             enc = self.encrypt(text, ciph, key)
-            print(f"DEBUG - Encrypted message length: {len(enc)}")
-            print(f"DEBUG - key: {key}")
             
             pkt = json.dumps({
                 "type": "message", 
@@ -942,7 +880,6 @@ class Client(QWidget):
             }) + "\n"
             
             self.sock.send(pkt.encode())
-            print(f"DEBUG - Message sent successfully")
             
             # Display sent message
             self.log(f"<b>Vous → {dest}:</b> {text}")
@@ -979,11 +916,25 @@ class Client(QWidget):
         if ciph == "Caesar":
             return caesar_encrypt(text, -key % 26)
         if ciph == "Caesar without Key":
-            # IMPROVEMENT: Use only auto-decryption, as intended by this cipher's name (Change 2)
-            language = key["language"] if isinstance(key, dict) else "english"
-            plain, detected, conf = auto_decrypt_caesar(text, language)
-            self.log(f"<small style='color:#0066cc'>🔍 Auto-detected shift: {detected} (confidence: {conf:.1f}%)</small>")
-            return plain
+            if isinstance(key, dict):
+                decrypt_key = key.get("decrypt_key")
+                language = key.get("language", "english")
+                
+                if decrypt_key is not None:
+                    # Use the known key (decrypt with opposite shift)
+                    decrypted = caesar_encrypt(text, -decrypt_key % 26)
+                    self.log(f"<small style='color:#0066cc'>🔍 Decrypted using shift {decrypt_key}</small>")
+                    return decrypted
+                else:
+                    # Auto-detect using dictionary
+                    plain, detected, conf = auto_decrypt_caesar(text, language)
+                    self.log(f"<small style='color:#0066cc'>🔍 Auto-detected shift: {detected} (confidence: {conf:.1f}%)</small>")
+                    return plain
+            else:
+                # Fallback to auto-detection with English
+                plain, detected, conf = auto_decrypt_caesar(text, "english")
+                self.log(f"<small style='color:#0066cc'>🔍 Auto-detected shift: {detected} (confidence: {conf:.1f}%)</small>")
+                return plain
         if ciph == "Vigenère":
             return vigenere_decrypt(text, key)
         if ciph == "Substitution":
@@ -997,18 +948,6 @@ class Client(QWidget):
         raise ValueError("Unknown cipher")
     
             
-    def crack(self):
-        sel = self.chat.textCursor().selectedText()
-        if not sel:
-            m = re.search(r'<code[^>]*>([^<]+)</code>', self.chat.toHtml())
-            if m: sel = m.group(1)
-        if not sel or not any(c.isalpha() for c in sel):
-            QMessageBox.information(self, "", "Sélectionnez un message Caesar à cracker")
-            return
-        plain, shift = crack_caesar(sel)
-        QMessageBox.information(self, "Cracké!",
-            f"Décalage: <b>{shift}</b><br><br><code>{plain}</code>")
-
 if __name__ == "__main__":
     from PyQt5.QtCore import QTimer
     app = QApplication(sys.argv)
